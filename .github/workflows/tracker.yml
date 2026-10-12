@@ -1,0 +1,25 @@
+
+name: WWM Code Tracker
+
+on:
+  schedule:
+    - cron: "0 1,9,15 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  run-tracker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run tracker
+        run: python tracker.py
