@@ -1,0 +1,41 @@
+
+{
+  "sources": [
+    {
+      "name": "Official News",
+      "url": "https://www.wherewindsmeetgame.com/news/",
+      "type": "official",
+      "priority": 1
+    },
+    {
+      "name": "PC Gamer",
+      "url": "https://www.pcgamer.com/games/action/where-winds-meet-codes/",
+      "type": "guide",
+      "priority": 2
+    },
+    {
+      "name": "Pocket Gamer",
+      "url": "https://www.pocketgamer.com/where-winds-meet/codes/",
+      "type": "guide",
+      "priority": 2
+    },
+    {
+      "name": "Beebom",
+      "url": "https://beebom.com/where-winds-meet-codes/",
+      "type": "guide",
+      "priority": 2
+    },
+    {
+      "name": "Game8",
+      "url": "https://game8.co/games/Where-Winds-Meet/archives/564660",
+      "type": "guide",
+      "priority": 2
+    },
+    {
+      "name": "PCGamesN",
+      "url": "https://www.pcgamesn.com/where-winds-meets/codes",
+      "type": "guide",
+      "priority": 2
+    }
+  ]
+}
