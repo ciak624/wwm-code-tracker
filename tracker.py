@@ -2,8 +2,9 @@
 import json
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup
@@ -12,17 +13,21 @@ ROOT = Path(__file__).resolve().parent
 SOURCES_FILE = ROOT / "sources.json"
 DATA_DIR = ROOT / "data"
 DATABASE_FILE = DATA_DIR / "codes.json"
+DAILY_FILE = DATA_DIR / "daily_messages.json"
 
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+TAIPEI = ZoneInfo("Asia/Taipei")
 
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (compatible; WWMCodeTracker/1.0; "
-        "+https://github.com/ciak624/wwm-code-tracker)"
+        "DiscordBot "
+        "(https://github.com/ciak624/wwm-code-tracker, 1.0)"
     )
 }
 
-CODE_PATTERN = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9]{6,20}(?![A-Za-z0-9])")
+CODE_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])[A-Za-z0-9]{6,20}(?![A-Za-z0-9])"
+)
 
 STOPWORDS = {
     "REDEEM", "REWARDS", "REWARD", "EXPIRED", "ACTIVE",
@@ -34,8 +39,8 @@ STOPWORDS = {
 }
 
 
-def now_utc():
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+def now_taipei():
+    return datetime.now(TAIPEI)
 
 
 def load_json(path, default):
@@ -46,36 +51,11 @@ def load_json(path, default):
         return json.load(file)
 
 
-def save_database(database):
+def save_json(path, data):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    with DATABASE_FILE.open("w", encoding="utf-8") as file:
-        json.dump(database, file, ensure_ascii=False, indent=2)
-
-
-def send_discord(message):
-    if not WEBHOOK_URL:
-        print("錯誤：未設定 DISCORD_WEBHOOK_URL")
-        return False
-
-    try:
-        response = requests.post(
-            WEBHOOK_URL,
-            json={"content": message},
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": (
-                    "DiscordBot "
-                    "(https://github.com/ciak624/wwm-code-tracker, 1.0)"
-                ),
-            },
-            timeout=20,
-        )
-        response.raise_for_status()
-        return True
-    except requests.RequestException as error:
-        print(f"Discord 通知失敗：{error}")
-        return False
+    with path.open("w", encoding="utf-8") as file:
+        json.dump(data, file, ensure_ascii=False, indent=2)
 
 
 def extract_codes(html):
@@ -92,9 +72,7 @@ def extract_codes(html):
 
     found = set()
 
-    for index, line in enumerate(lines):
-        line_upper = line.upper().strip()
-
+    for line in lines:
         for match in CODE_PATTERN.finditer(line):
             code = match.group(0).upper()
 
@@ -104,66 +82,132 @@ def extract_codes(html):
             has_letters = any(char.isalpha() for char in code)
             has_digits = any(char.isdigit() for char in code)
 
-            # 優先接受同時包含英文字母與數字的候選碼。
             if has_letters and has_digits:
                 found.add(code)
-                continue
-
-            # 純英文字母候選碼採較嚴格條件，減少誤判。
-            if (
-                has_letters
-                and len(code) >= 8
-                and line_upper == code
-            ):
+            elif has_letters and len(code) >= 8 and line.upper().strip() == code:
                 found.add(code)
 
     return found
 
 
 def fetch_source(source):
-    url = source["url"]
-    name = source.get("name", url)
-
     try:
         response = requests.get(
-            url,
+            source["url"],
             headers=HEADERS,
             timeout=25,
         )
         response.raise_for_status()
 
-        content_type = response.headers.get("Content-Type", "")
-        if "html" not in content_type.lower():
-            print(f"略過非 HTML 網頁：{name}")
-            return set()
+        if "html" not in response.headers.get("Content-Type", "").lower():
+            print(f"略過非 HTML 網頁：{source['name']}")
+            return set(), False
 
         codes = extract_codes(response.text)
-        print(f"{name}：找到 {len(codes)} 個候選碼")
-        return codes
+        print(f"{source['name']}：找到 {len(codes)} 個候選碼")
+        return codes, True
 
     except (requests.RequestException, ValueError) as error:
-        print(f"來源讀取失敗：{name}：{error}")
-        return set()
+        print(f"來源讀取失敗：{source.get('name', source['url'])}：{error}")
+        return set(), False
 
 
-def send_in_chunks(lines, heading):
-    # Discord 單則訊息上限為 2000 字元，保留安全空間。
-    message = heading
+def webhook_post(content):
+    if not WEBHOOK_URL:
+        print("錯誤：未設定 DISCORD_WEBHOOK_URL")
+        return None
 
-    for line in lines:
-        addition = "\n" + line
+    separator = "&" if "?" in WEBHOOK_URL else "?"
+    url = f"{WEBHOOK_URL}{separator}wait=true"
 
-        if len(message) + len(addition) > 1800:
-            send_discord(message)
-            message = heading + "\n（續）"
+    try:
+        response = requests.post(
+            url,
+            json={"content": content},
+            headers=HEADERS,
+            timeout=20,
+        )
+        response.raise_for_status()
+        return response.json().get("id")
 
-        message += addition
+    except (requests.RequestException, ValueError) as error:
+        print(f"Discord 發送失敗：{error}")
+        return None
 
-    if message != heading and message != heading + "\n（續）":
-        send_discord(message)
+
+def webhook_edit(message_id, content):
+    url = f"{WEBHOOK_URL.rstrip('/')}/messages/{message_id}"
+
+    try:
+        response = requests.patch(
+            url,
+            json={"content": content},
+            headers=HEADERS,
+            timeout=20,
+        )
+        response.raise_for_status()
+        return True
+
+    except requests.RequestException as error:
+        print(f"Discord 訊息更新失敗：{error}")
+        return False
+
+
+def make_message_chunks(date_text, codes):
+    heading = f"📋 {date_text}\n"
+    chunks = []
+    current = heading
+
+    for code in codes:
+        item = f"`{code}` "
+        if len(current) + len(item) > 1850:
+            chunks.append(current.rstrip())
+            current = heading + item
+        else:
+            current += item
+
+    if current != heading:
+        chunks.append(current.rstrip())
+
+    return chunks
+
+
+def update_daily_discord(date_text, daily_record):
+    if not daily_record["codes"]:
+        return
+
+    chunks = make_message_chunks(
+        date_text,
+        daily_record["codes"],
+    )
+
+    message_ids = daily_record.setdefault("message_ids", [])
+
+    for index, content in enumerate(chunks):
+        if index < len(message_ids):
+            message_id = message_ids[index]
+
+            if webhook_edit(message_id, content):
+                print(f"已更新 Discord 當日訊息：{date_text}")
+                continue
+
+        # 沒有舊訊息，或舊訊息已無法更新時，建立新訊息。
+        new_id = webhook_post(content)
+
+        if new_id:
+            if index < len(message_ids):
+                message_ids[index] = new_id
+            else:
+                message_ids.append(new_id)
+
+            print(f"已發送 Discord 日期訊息：{date_text}")
 
 
 def main():
+    if not WEBHOOK_URL:
+        print("錯誤：請先設定 DISCORD_WEBHOOK_URL")
+        return
+
     sources_data = load_json(SOURCES_FILE, {"sources": []})
     sources = sources_data.get("sources", [])
 
@@ -172,31 +216,28 @@ def main():
         return
 
     database = load_json(DATABASE_FILE, {})
-    first_run = not DATABASE_FILE.exists()
+    daily_data = load_json(DAILY_FILE, {})
+
+    today = now_taipei().date().isoformat()
+    first_daily_run = not DAILY_FILE.exists()
 
     discovered = {}
     successful_sources = 0
 
     for source in sources:
-        codes = fetch_source(source)
+        codes, succeeded = fetch_source(source)
 
-        if codes:
+        if succeeded:
             successful_sources += 1
 
         for code in codes:
-            if code not in discovered:
-                discovered[code] = []
-
-            discovered[code].append({
+            discovered.setdefault(code, []).append({
                 "name": source.get("name", source["url"]),
                 "url": source["url"],
             })
 
     if successful_sources == 0:
-        send_discord(
-            "⚠️ 燕雲兌換碼巡查：本次沒有任何來源成功取得候選碼。"
-            "可能是網站暫時無法存取，請查看 GitHub Actions 執行紀錄。"
-        )
+        print("所有來源都無法讀取；保留原有紀錄，不修改狀態。")
         return
 
     new_codes = []
@@ -204,15 +245,16 @@ def main():
     for code, code_sources in discovered.items():
         if code not in database:
             database[code] = {
-                "first_seen": now_utc(),
-                "last_seen": now_utc(),
+                "first_seen": now_taipei().isoformat(timespec="seconds"),
+                "first_seen_date": today,
+                "last_seen": now_taipei().isoformat(timespec="seconds"),
                 "sources": code_sources,
             }
-
-            new_codes.append((code, code_sources))
-
+            new_codes.append(code)
         else:
-            database[code]["last_seen"] = now_utc()
+            database[code]["last_seen"] = now_taipei().isoformat(
+                timespec="seconds"
+            )
 
             existing_urls = {
                 item.get("url")
@@ -224,60 +266,33 @@ def main():
                     database[code].setdefault("sources", []).append(item)
                     existing_urls.add(item["url"])
 
-    save_database(database)
+    save_json(DATABASE_FILE, database)
 
-    if first_run:
-        print(f"首次建立資料庫，共記錄 {len(database)} 個候選碼。")
+    # 第一次切換到日期格式時，補上先前首次掃描通知中的前 12 個候選碼。
+    if first_daily_run and database:
+        daily_data[today] = {
+            "codes": sorted(database.keys())[:12],
+            "message_ids": [],
+        }
 
-        # 初次建立資料庫時只通知一批，避免大量歷史資料洗版。
-        initial_codes = sorted(discovered.items())[:12]
+    daily_record = daily_data.setdefault(
+        today,
+        {"codes": [], "message_ids": []},
+    )
 
-        if initial_codes:
-            lines = []
-            for code, code_sources in initial_codes:
-                source_names = ", ".join(
-                    item["name"] for item in code_sources[:2]
-                )
-                lines.append(f"• `{code}`｜來源：{source_names}")
+    for code in new_codes:
+        if code not in daily_record["codes"]:
+            daily_record["codes"].append(code)
 
-            send_in_chunks(
-                lines,
-                "🔎 燕雲兌換碼巡查：首次掃描結果\n"
-                "以下是網站列出的候選碼，未確認仍有效；來源可能含過期碼。",
-            )
+    # 當天所有掃描共用日期；已存在的訊息會被更新，不會每次另發。
+    if daily_record["codes"]:
+        update_daily_discord(today, daily_record)
 
-        send_discord(
-            f"資料庫已建立，共記錄 {len(database)} 個候選碼。"
-            "之後將只通知新發現的代碼。"
-        )
-        return
+    save_json(DAILY_FILE, daily_data)
 
-    if new_codes:
-        lines = []
-
-        for code, code_sources in sorted(new_codes):
-            source_names = ", ".join(
-                item["name"] for item in code_sources[:3]
-            )
-            source_urls = "\n".join(
-                f"  {item['url']}" for item in code_sources[:2]
-            )
-
-            lines.append(
-                f"🆕 `{code}`\n"
-                f"來源：{source_names}\n"
-                f"{source_urls}\n"
-                "狀態：尚未確認有效，請進遊戲測試。"
-            )
-
-        send_in_chunks(
-            lines,
-            f"燕雲十六聲｜發現 {len(new_codes)} 個新候選碼",
-        )
-    else:
-        print("沒有發現新候選碼。")
-
-    print(f"本次完成，資料庫共有 {len(database)} 個候選碼。")
+    print(f"本次找到 {len(discovered)} 個候選碼。")
+    print(f"本次新增 {len(new_codes)} 個候選碼。")
+    print(f"資料庫總數：{len(database)}。")
 
 
 if __name__ == "__main__":
