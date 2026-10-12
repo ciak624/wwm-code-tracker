@@ -112,6 +112,116 @@ def fetch_source(source):
         return set(), False
 
 
+
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "").strip()
+YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
+
+
+def fetch_youtube_codes():
+    """搜尋 YouTube 影片標題、說明及公開留言中的候選兌換碼。"""
+    if not YOUTUBE_API_KEY:
+        print("未設定 YOUTUBE_API_KEY，略過 YouTube。")
+        return {}, False
+
+    discovered = {}
+    videos = {}
+    successful_searches = 0
+
+    queries = [
+        "Where Winds Meet codes",
+        "燕雲十六聲 兌換碼",
+    ]
+
+    # 搜尋兩組關鍵字，各取最新 5 部影片。
+    for query in queries:
+        try:
+            response = requests.get(
+                f"{YOUTUBE_API_BASE}/search",
+                params={
+                    "part": "snippet",
+                    "q": query,
+                    "type": "video",
+                    "order": "date",
+                    "maxResults": 5,
+                    "key": YOUTUBE_API_KEY,
+                },
+                timeout=25,
+            )
+            response.raise_for_status()
+            data = response.json()
+            successful_searches += 1
+
+            for item in data.get("items", []):
+                video_id = item.get("id", {}).get("videoId")
+                snippet = item.get("snippet", {})
+
+                if not video_id:
+                    continue
+
+                title = snippet.get("title", "YouTube 影片")
+                video_url = f"https://www.youtube.com/watch?v={video_id}"
+                videos[video_id] = {
+                    "title": title,
+                    "url": video_url,
+                }
+
+                text = (
+                    title + "\n"
+                    + snippet.get("description", "")
+                )
+
+                for code in extract_codes(text):
+                    discovered.setdefault(code, []).append({
+                        "name": f"YouTube 影片：{title}",
+                        "url": video_url,
+                    })
+
+        except (requests.RequestException, ValueError) as error:
+            print(f"YouTube 搜尋失敗（{query}）：{error}")
+
+    # 讀取每部影片最近最多 100 則公開留言。
+    for video_id, video in videos.items():
+        try:
+            response = requests.get(
+                f"{YOUTUBE_API_BASE}/commentThreads",
+                params={
+                    "part": "snippet",
+                    "videoId": video_id,
+                    "maxResults": 100,
+                    "order": "time",
+                    "textFormat": "plainText",
+                    "key": YOUTUBE_API_KEY,
+                },
+                timeout=25,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            for item in data.get("items", []):
+                comment = (
+                    item.get("snippet", {})
+                    .get("topLevelComment", {})
+                    .get("snippet", {})
+                    .get("textDisplay", "")
+                )
+
+                for code in extract_codes(comment):
+                    discovered.setdefault(code, []).append({
+                        "name": f"YouTube 留言：{video['title']}",
+                        "url": video["url"],
+                    })
+
+        except (requests.RequestException, ValueError) as error:
+            # 例如影片關閉留言時，略過該影片，不中斷其他來源。
+            print(f"YouTube 留言讀取失敗（{video_id}）：{error}")
+
+    print(f"YouTube：搜尋成功 {successful_searches} 組關鍵字，"
+          f"找到 {len(discovered)} 個候選碼。")
+
+    return discovered, successful_searches > 0
+
+
+
 def webhook_post(content):
     if not WEBHOOK_URL:
         print("錯誤：未設定 DISCORD_WEBHOOK_URL")
@@ -236,6 +346,18 @@ def main():
                 "url": source["url"],
             })
 
+
+    youtube_codes, youtube_succeeded = fetch_youtube_codes()
+
+    if youtube_succeeded:
+        successful_sources += 1
+
+    for code, code_sources in youtube_codes.items():
+        discovered.setdefault(code, []).extend(code_sources)
+
+
+
+    
     if successful_sources == 0:
         print("所有來源都無法讀取；保留原有紀錄，不修改狀態。")
         return
