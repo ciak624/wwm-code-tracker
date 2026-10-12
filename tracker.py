@@ -282,9 +282,10 @@ def make_message_chunks(date_text, codes):
     return chunks
 
 
+
 def update_daily_discord(date_text, daily_record):
     if not daily_record["codes"]:
-        return
+        return True
 
     chunks = make_message_chunks(
         date_text,
@@ -292,6 +293,7 @@ def update_daily_discord(date_text, daily_record):
     )
 
     message_ids = daily_record.setdefault("message_ids", [])
+    all_success = True
 
     for index, content in enumerate(chunks):
         if index < len(message_ids):
@@ -299,18 +301,23 @@ def update_daily_discord(date_text, daily_record):
 
             if webhook_edit(message_id, content):
                 print(f"已更新 Discord 當日訊息：{date_text}")
-                continue
+            else:
+                print(f"更新失敗，保留訊息 ID，稍後重試：{date_text}")
+                all_success = False
 
-        # 沒有舊訊息，或舊訊息已無法更新時，建立新訊息。
+            continue
+
         new_id = webhook_post(content)
 
         if new_id:
-            if index < len(message_ids):
-                message_ids[index] = new_id
-            else:
-                message_ids.append(new_id)
-
+            message_ids.append(new_id)
             print(f"已發送 Discord 日期訊息：{date_text}")
+        else:
+            print(f"發送失敗，稍後重試：{date_text}")
+            all_success = False
+
+    return all_success
+
 
 
 def main():
@@ -389,23 +396,38 @@ def main():
                     database[code].setdefault("sources", []).append(item)
                     existing_urls.add(item["url"])
 
+
+    # 先儲存候選碼資料，避免掃描結果因執行中斷而遺失。
     save_json(DATABASE_FILE, database)
 
+    # 只處理尚未成功通知的新碼。
+    pending_codes = [
+        code
+        for code, item in database.items()
+        if item.get("notified") is False
+    ]
 
     daily_record = daily_data.setdefault(
         today,
         {"codes": [], "message_ids": []},
     )
 
-    for code in new_codes:
+    for code in pending_codes:
         if code not in daily_record["codes"]:
             daily_record["codes"].append(code)
 
-    # 當天所有掃描共用日期；已存在的訊息會被更新，不會每次另發。
+    # 發送或更新今天的貼文；成功後才標記為已通知。
     if daily_record["codes"]:
-        update_daily_discord(today, daily_record)
+        delivered = update_daily_discord(today, daily_record)
+
+        if delivered:
+            for code in pending_codes:
+                database[code]["notified"] = True
+
+            save_json(DATABASE_FILE, database)
 
     save_json(DAILY_FILE, daily_data)
+
 
     print(f"本次找到 {len(discovered)} 個候選碼。")
     print(f"本次新增 {len(new_codes)} 個候選碼。")
