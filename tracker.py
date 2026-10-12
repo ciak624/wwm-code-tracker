@@ -154,7 +154,7 @@ def webhook_edit(message_id, content):
 
 
 def make_message_chunks(date_text, codes):
-    heading = f"📋 {date_text}\n"
+    heading = f"👻 {date_text}\n"
     chunks = []
     current = heading
 
