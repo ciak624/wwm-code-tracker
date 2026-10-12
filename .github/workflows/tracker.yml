@@ -28,7 +28,9 @@ jobs:
       - name: Run tracker
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
         run: python tracker.py
+
 
       - name: Save database to GitHub
         run: |
