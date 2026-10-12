@@ -18,7 +18,10 @@ def send_discord(message):
     request = urllib.request.Request(
         webhook_url,
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "DiscordBot (https://github.com/ciak624/wwm-code-tracker, 1.0)",
+        },
         method="POST",
     )
 
