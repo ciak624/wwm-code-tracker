@@ -390,12 +390,6 @@ def main():
 
     save_json(DATABASE_FILE, database)
 
-    # 第一次切換到日期格式時，補上先前首次掃描通知中的前 12 個候選碼。
-    if first_daily_run and database:
-        daily_data[today] = {
-            "codes": sorted(database.keys())[:12],
-            "message_ids": [],
-        }
 
     daily_record = daily_data.setdefault(
         today,
