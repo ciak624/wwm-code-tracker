@@ -371,6 +371,7 @@ def main():
                 "first_seen_date": today,
                 "last_seen": now_taipei().isoformat(timespec="seconds"),
                 "sources": code_sources,
+                "notified": False,
             }
             new_codes.append(code)
         else:
