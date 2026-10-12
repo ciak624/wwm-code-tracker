@@ -22,4 +22,6 @@ jobs:
           python-version: "3.12"
 
       - name: Run tracker
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python tracker.py
