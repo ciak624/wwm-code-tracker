@@ -10,9 +10,9 @@ import requests
 from bs4 import BeautifulSoup
 
 
-# =========================
+# ============================================================
 # 基本設定
-# =========================
+# ============================================================
 
 ROOT = Path(__file__).resolve().parent
 SOURCES_FILE = ROOT / "sources.json"
@@ -47,9 +47,9 @@ STOPWORDS = {
 }
 
 
-# =========================
-# 檔案與時間
-# =========================
+# ============================================================
+# 時間與 JSON
+# ============================================================
 
 def now_taipei():
     return datetime.now(TAIPEI)
@@ -70,9 +70,9 @@ def save_json(path, data):
         json.dump(data, file, ensure_ascii=False, indent=2)
 
 
-# =========================
+# ============================================================
 # 兌換碼辨識
-# =========================
+# ============================================================
 
 def extract_codes(text):
     soup = BeautifulSoup(text, "html.parser")
@@ -113,9 +113,9 @@ def extract_codes(text):
     return found
 
 
-# =========================
-# 一般網站掃描
-# =========================
+# ============================================================
+# 網站掃描
+# ============================================================
 
 def fetch_source(source):
     try:
@@ -151,9 +151,10 @@ def fetch_source(source):
         return set(), False
 
 
-# =========================
-# YouTube 影片與公開留言
-# =========================
+# ============================================================
+# YouTube 掃描
+# 搜尋影片標題、說明欄、公開的頂層留言
+# ============================================================
 
 def fetch_youtube_codes():
     if not YOUTUBE_API_KEY:
@@ -169,7 +170,6 @@ def fetch_youtube_codes():
         "燕雲十六聲 兌換碼",
     ]
 
-    # 每組關鍵字搜尋最新 5 部影片
     for query in queries:
         try:
             response = requests.get(
@@ -202,9 +202,10 @@ def fetch_youtube_codes():
                 title = snippet.get(
                     "title", "YouTube 影片"
                 )
+
                 video_url = (
                     "https://www.youtube.com/watch?v="
-                    + video_id
+                    f"{video_id}"
                 )
 
                 videos[video_id] = {
@@ -212,9 +213,9 @@ def fetch_youtube_codes():
                     "url": video_url,
                 }
 
-                # 掃描影片標題與資訊欄
                 text = (
-                    title + "\n"
+                    title
+                    + "\n"
                     + snippet.get("description", "")
                 )
 
@@ -226,13 +227,11 @@ def fetch_youtube_codes():
                         "url": video_url,
                     })
 
-        except (
-            requests.RequestException,
-            ValueError,
-        ) as error:
-            print(f"YouTube 搜尋失敗（{query}）：{error}")
+        except (requests.RequestException, ValueError) as error:
+            print(
+                f"YouTube 搜尋失敗（{query}）：{error}"
+            )
 
-    # 每部影片讀取最近最多 100 則頂層公開留言
     for video_id, video in videos.items():
         try:
             response = requests.get(
@@ -264,15 +263,13 @@ def fetch_youtube_codes():
                         code, []
                     ).append({
                         "name": (
-                            f"YouTube 留言：{video['title']}"
+                            f"YouTube 留言："
+                            f"{video['title']}"
                         ),
                         "url": video["url"],
                     })
 
-        except (
-            requests.RequestException,
-            ValueError,
-        ) as error:
+        except (requests.RequestException, ValueError) as error:
             print(
                 f"YouTube 留言讀取失敗"
                 f"（{video_id}）：{error}"
@@ -286,9 +283,9 @@ def fetch_youtube_codes():
     return discovered, successful_searches > 0
 
 
-# =========================
+# ============================================================
 # Discord Webhook
-# =========================
+# ============================================================
 
 def webhook_post(content):
     if not WEBHOOK_URL:
@@ -309,10 +306,7 @@ def webhook_post(content):
 
         return response.json().get("id")
 
-    except (
-        requests.RequestException,
-        ValueError,
-    ) as error:
+    except (requests.RequestException, ValueError) as error:
         print(f"Discord 發送失敗：{error}")
         return None
 
@@ -331,6 +325,7 @@ def webhook_edit(message_id, content):
             timeout=20,
         )
         response.raise_for_status()
+
         return True
 
     except requests.RequestException as error:
@@ -338,38 +333,148 @@ def webhook_edit(message_id, content):
         return False
 
 
-# =========================
-# 日期貼文
-# =========================
+# ============================================================
+# 整理最近三個有新碼的日期
+#
+# 只採用本追蹤器已通知或正在等待通知的兌換碼。
+# 舊資料沒有 notified 欄位時，不會被重新列入。
+# ============================================================
 
-def make_message_chunks(date_text, codes):
-    heading = f"👻 {date_text}\n"
+def get_recent_code_groups(database, pending_codes):
+    pending_set = set(pending_codes)
+    eligible = []
+
+    for code, item in database.items():
+        if (
+            item.get("notified") is not True
+            and code not in pending_set
+        ):
+            continue
+
+        first_seen_date = item.get("first_seen_date")
+
+        if not first_seen_date:
+            continue
+
+        first_seen = item.get("first_seen", "")
+
+        eligible.append({
+            "code": code,
+            "date": first_seen_date,
+            "first_seen": first_seen,
+        })
+
+    # 先找出最近三個有兌換碼的日期。
+    recent_dates = sorted(
+        {item["date"] for item in eligible},
+        reverse=True,
+    )[:3]
+
+    groups = []
+
+    for date_text in recent_dates:
+        # 同一天依首次發現時間倒序排列。
+        # 時間較新的碼放前面。
+        codes = [
+            item["code"]
+            for item in sorted(
+                eligible,
+                key=lambda item: item["first_seen"],
+                reverse=True,
+            )
+            if item["date"] == date_text
+        ]
+
+        groups.append((date_text, codes))
+
+    return groups
+
+
+# ============================================================
+# Discord 訊息分段
+#
+# 每個日期都有標題，最新日期排在前面。
+# 保留 Discord 單則訊息長度限制。
+# ============================================================
+
+def make_message_chunks(groups):
+    sections = []
+
+    for date_text, codes in groups:
+        heading = f"👻 {date_text}\n"
+        current_codes = []
+
+        for code in codes:
+            candidate_codes = current_codes + [code]
+            candidate = (
+                heading
+                + " ".join(
+                    f"`{item}`"
+                    for item in candidate_codes
+                )
+            )
+
+            if len(candidate) > 1850 and current_codes:
+                sections.append(
+                    heading
+                    + " ".join(
+                        f"`{item}`"
+                        for item in current_codes
+                    )
+                )
+                current_codes = [code]
+
+            else:
+                current_codes.append(code)
+
+        if current_codes:
+            sections.append(
+                heading
+                + " ".join(
+                    f"`{item}`"
+                    for item in current_codes
+                )
+            )
+
     chunks = []
-    current = heading
+    current = ""
 
-    for code in codes:
-        item = f"`{code}` "
+    for section in sections:
+        candidate = (
+            f"{current}\n\n{section}"
+            if current
+            else section
+        )
 
-        if len(current) + len(item) > 1850:
-            chunks.append(current.rstrip())
-            current = heading + item
+        if len(candidate) > 1850 and current:
+            chunks.append(current)
+            current = section
         else:
-            current += item
+            current = candidate
 
-    if current != heading:
-        chunks.append(current.rstrip())
+    if current:
+        chunks.append(current)
 
     return chunks
 
 
-def update_daily_discord(date_text, daily_record):
-    if not daily_record["codes"]:
+# ============================================================
+# 更新當天 Discord 訊息
+#
+# 同一天：編輯同一則訊息。
+# 隔天：使用新的日期紀錄，建立新訊息。
+# 不刪除舊訊息，也不修改其他日期的訊息。
+# ============================================================
+
+def update_daily_discord(
+    date_text,
+    daily_record,
+    groups,
+):
+    if not groups:
         return True
 
-    chunks = make_message_chunks(
-        date_text,
-        daily_record["codes"],
-    )
+    chunks = make_message_chunks(groups)
 
     message_ids = daily_record.setdefault(
         "message_ids", []
@@ -387,7 +492,6 @@ def update_daily_discord(date_text, daily_record):
                     f"{date_text}"
                 )
             else:
-                # 不擅自另發，避免更新失敗時重複貼文
                 print(
                     f"更新失敗，保留訊息 ID："
                     f"{date_text}"
@@ -400,12 +504,14 @@ def update_daily_discord(date_text, daily_record):
 
         if new_id:
             message_ids.append(new_id)
+
             print(
                 f"已發送 Discord 日期訊息："
                 f"{date_text}"
             )
         else:
             all_success = False
+
             print(
                 f"發送失敗，稍後重試："
                 f"{date_text}"
@@ -414,30 +520,42 @@ def update_daily_discord(date_text, daily_record):
     return all_success
 
 
-# =========================
+# ============================================================
 # 主程式
-# =========================
+# ============================================================
 
 def main():
     if not WEBHOOK_URL:
-        print("錯誤：請先設定 DISCORD_WEBHOOK_URL")
+        print(
+            "錯誤：請先設定 DISCORD_WEBHOOK_URL"
+        )
         return
 
     sources_data = load_json(
         SOURCES_FILE,
         {"sources": []},
     )
+
     sources = sources_data.get("sources", [])
 
-    database = load_json(DATABASE_FILE, {})
-    daily_data = load_json(DAILY_FILE, {})
+    database = load_json(
+        DATABASE_FILE,
+        {},
+    )
+
+    daily_data = load_json(
+        DAILY_FILE,
+        {},
+    )
 
     today = now_taipei().date().isoformat()
-
     discovered = {}
     successful_sources = 0
 
-    # 掃描一般網站
+    # --------------------------------------------------------
+    # 1. 掃描網站
+    # --------------------------------------------------------
+
     for source in sources:
         codes, succeeded = fetch_source(source)
 
@@ -445,14 +563,19 @@ def main():
             successful_sources += 1
 
         for code in codes:
-            discovered.setdefault(code, []).append({
+            discovered.setdefault(
+                code, []
+            ).append({
                 "name": source.get(
                     "name", source["url"]
                 ),
                 "url": source["url"],
             })
 
-    # 掃描 YouTube
+    # --------------------------------------------------------
+    # 2. 掃描 YouTube
+    # --------------------------------------------------------
+
     youtube_codes, youtube_succeeded = (
         fetch_youtube_codes()
     )
@@ -461,10 +584,11 @@ def main():
         successful_sources += 1
 
     for code, code_sources in youtube_codes.items():
-        discovered.setdefault(code, []).extend(
-            code_sources
-        )
+        discovered.setdefault(
+            code, []
+        ).extend(code_sources)
 
+    # 所有來源都失敗時，不更新資料庫狀態。
     if successful_sources == 0:
         print(
             "所有來源都無法讀取；"
@@ -472,14 +596,17 @@ def main():
         )
         return
 
-    # 將首次發現的代碼加入永久資料庫
+    # --------------------------------------------------------
+    # 3. 記錄新碼，保留首次發現日期
+    # --------------------------------------------------------
+
     new_codes = []
 
     for code, code_sources in discovered.items():
         if code not in database:
             database[code] = {
                 "first_seen": now_taipei().isoformat(
-                    timespec="seconds"
+                    timespec="microseconds"
                 ),
                 "first_seen_date": today,
                 "last_seen": now_taipei().isoformat(
@@ -513,41 +640,68 @@ def main():
 
                     existing_urls.add(item["url"])
 
-    # 先保存掃描結果
+    # 先保存候選碼，即使 Discord 暫時失敗也不丟失資料。
     save_json(DATABASE_FILE, database)
 
-    # 只處理尚未成功通知的代碼
-    # 舊資料沒有 notified=False，不會被重新發布
+    # --------------------------------------------------------
+    # 4. 找出尚未成功通知的碼
+    #
+    # 舊資料沒有 notified=False，不會被重新通知。
+    # --------------------------------------------------------
+
     pending_codes = [
         code
         for code, item in database.items()
         if item.get("notified") is False
     ]
 
+    # --------------------------------------------------------
+    # 5. 有待通知的新碼時，更新今天的訊息
+    #
+    # 訊息內容包含最近三個有新碼的日期。
+    # --------------------------------------------------------
+
     if pending_codes:
-        # 僅更新今天的貼文，不回頭編輯過去日期
         daily_record = daily_data.setdefault(
             today,
-            {"codes": [], "message_ids": []},
+            {
+                "codes": [],
+                "message_ids": [],
+            },
         )
 
+        # 記錄這次要處理的碼，避免重複加入。
         for code in pending_codes:
             if code not in daily_record["codes"]:
                 daily_record["codes"].append(code)
 
+        groups = get_recent_code_groups(
+            database,
+            pending_codes,
+        )
+
         delivered = update_daily_discord(
             today,
             daily_record,
+            groups,
         )
 
-        # 只有所有貼文操作成功，才標記為已通知
+        # 所有訊息成功更新後，才標記為已通知。
         if delivered:
             for code in pending_codes:
                 database[code]["notified"] = True
 
             save_json(DATABASE_FILE, database)
 
+    # --------------------------------------------------------
+    # 6. 保存 Discord 訊息 ID
+    # --------------------------------------------------------
+
     save_json(DAILY_FILE, daily_data)
+
+    # --------------------------------------------------------
+    # 7. 執行摘要
+    # --------------------------------------------------------
 
     print(f"本次找到 {len(discovered)} 個候選碼。")
     print(f"本次新增 {len(new_codes)} 個候選碼。")
